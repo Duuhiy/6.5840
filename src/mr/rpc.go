@@ -6,7 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
+import (
+	"os"
+	"time"
+)
 import "strconv"
 
 //
@@ -23,7 +26,40 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type Task struct {
+	FileName string
+	TaskId   int
+	//TaskStatus int
+	TaskType  int
+	NReduce   int
+	NMap      int
+	StartTime time.Time
+}
 
+type GetTaskArgs struct {
+	WorkerId int
+}
+
+type GetTaskResp struct {
+	Task Task
+}
+
+type RegisterWorkerArgs struct {
+}
+
+type RegisterWorkerResp struct {
+	Id int
+}
+
+type ReportTaskArgs struct {
+	Task     Task
+	Done     bool
+	Err      error
+	WorkerId int
+}
+
+type ReportTaskResp struct {
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

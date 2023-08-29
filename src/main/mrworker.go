@@ -23,7 +23,7 @@ func main() {
 	}
 
 	mapf, reducef := loadPlugin(os.Args[1])
-
+	//fmt.Println("加载插件完成，开始工作")
 	mr.Worker(mapf, reducef)
 }
 
