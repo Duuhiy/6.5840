@@ -177,20 +177,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// 如果我给别人投了票，现在我自己也超时了，给不给自己投票呢
 	// 如果我给他投票了，就把lastTime更新成现在
 	if args.Term < rf.currentTerm {
 		// candidate的term比自己小
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-		fmt.Println("RequestVote 你的term别我小")
+		fmt.Printf("RequestVote 你 %v 的term比我 %v 小\n", args.CandidateId, rf.me)
 		return
 	}
 	if args.Term > rf.currentTerm {
-		// 更新自己
-		// 只有接收到更大的term才会重新投票
+		// 开启新term的投票
 		rf.currentTerm = args.Term
 		rf.role = Follower
 		rf.votedFor = -1
@@ -208,24 +207,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//	reply.VoteGranted = false
 	//	return
 	//}
-	if args.Term == rf.currentTerm {
-		// 可能投过票了
+	// 可能投过票了
+	if rf.votedFor == args.CandidateId {
 		// 给他投的, 他没收到reply
-		if rf.votedFor == args.CandidateId {
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = true
-			rf.lastTime = time.Now()
-			rf.persist()
-			fmt.Printf("%v 号给 %v号投过票了\n", rf.me, args.CandidateId)
-			return
-		}
-		// 给别人投的
-		if rf.votedFor != -1 {
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = false
-			fmt.Printf("%v 号给 %v号投过票了，不能给%v 号投了\n", rf.me, rf.votedFor, args.CandidateId)
-			return
-		}
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+		rf.lastTime = time.Now()
+		rf.persist()
+		fmt.Printf("%v 号给 %v号投过票了\n", rf.me, args.CandidateId)
+		return
+	}
+	// 给别人投的
+	if rf.votedFor != -1 {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		fmt.Printf("%v 号给 %v号投过票了，不能给%v 号投了\n", rf.me, rf.votedFor, args.CandidateId)
+		return
 	}
 	// 投票
 	rf.votedFor = args.CandidateId
@@ -266,6 +263,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		// 收到假leader的heartbeat，不能更新lastTime
+		fmt.Printf("AppendEntries 你 %v 的term比我 %v 小\n", args.LeaderId, rf.me)
 		return
 	}
 	rf.currentTerm = args.Term
@@ -291,6 +289,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//} else {
 	//	// append entries
 	//}
+	return
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -330,8 +329,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if rf.role != Candidate{
+		return true
+	}
 	// 获得投票
-	if reply.VoteGranted {
+	if reply.VoteGranted && reply.Term == rf.currentTerm {
+		// 获得的是本轮的投票
 		*votedCount++
 		if *votedCount > len(rf.peers)/2 {
 			// 成为新的leader
@@ -461,9 +464,10 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 100
 		// milliseconds.
-		// 睡眠时间应该比超时 时间短
+		// 睡眠时间应该比超时 时间短, 1s 内 heartbeat <= 10次
 		ms := 100 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		//time.Sleep(100 * time.Second)
 		rf.mu.Lock()
 		switch rf.role {
 		case Follower:
@@ -471,11 +475,15 @@ func (rf *Raft) ticker() {
 				// 超时了，没有收到leader的消息更新lastTime
 				// 开始参选
 				fmt.Println("超时了，我要竞选leader")
+				et := 400 + (rand.Int63() % 500)
+				rf.electionTimeout = time.Millisecond * time.Duration(et)
 				rf.attend()
 			}
 		case Candidate:
 			if time.Now().Sub(rf.lastTime) > rf.voteTimeout {
 				// 上一轮选举超时了，再次参选
+				vt := 400 + (rand.Int63() % 500)
+				rf.voteTimeout = time.Millisecond * time.Duration(vt)
 				fmt.Printf("上一轮选举超时了，再次参选 %v\n", rf.me)
 				rf.attend()
 			}
@@ -532,7 +540,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.matchIndex = nil
 	rf.applyChan = applyCh
 	et := 400 + (rand.Int63() % 500)
-	vt := 100 + (rand.Int63() % 300)
+	vt := 400 + (rand.Int63() % 500)
 	rf.electionTimeout = time.Millisecond * time.Duration(et)
 	rf.voteTimeout = time.Millisecond * time.Duration(vt)
 	// initialize from state persisted before a crash
