@@ -156,6 +156,20 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+func (rf *Raft) applyLogs() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	for i := rf.lastApplied + 1; i <= rf.commitedIndex; i++ {
+		rf.applyCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.logs[i].Command,
+			CommandIndex: i,
+		}
+		rf.lastApplied = i
+	}
+}
+
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -243,17 +257,50 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		//fmt.Printf("AppendEntries %d server 从leader变回了follower\n", rf.me)
 	}
 
+	rf.sendToChannel(rf.heartbeatCh, true)
 	reply.Term = rf.currentTerm
 	reply.Success = false
 
 	lastIndex := len(rf.logs) - 1
+	//fmt.Println("last : ",lastIndex)
 	if args.PrevLogIndex > lastIndex {
 		reply.NextIndex = lastIndex + 1
+		//fmt.Printf("pre > last : pre = %d\n", args.PrevLogIndex)
 		return
 	}
 
+	if pTerm := rf.logs[args.PrevLogIndex].Term; pTerm != args.PrevLogTerm {
+		// 不相等，回退一条
+		//fmt.Println("回退一条")
+		reply.NextIndex = args.PrevLogIndex - 1
+		return
+	}
+
+	//for i, j := args.PrevLogIndex+1, 0; i < lastIndex+1 && j < len(args.Entries); i, j = i+1, j+1 {
+	//	// 找到第一条不匹配的
+	//	if rf.logs[i].Term != args.Entries[j].Term {
+	//
+	//	}
+	//}
+
+	rf.logs = rf.logs[:args.PrevLogIndex + 1]
+	if args.Entries != nil{
+		rf.logs = append(rf.logs, args.Entries...)
+		//fmt.Println("--------------")
+	}
+	reply.NextIndex = len(rf.logs)
+
 	reply.Success = true
-	rf.sendToChannel(rf.heartbeatCh, true)
+
+	if args.LeaderCommit > rf.commitedIndex {
+		if args.LeaderCommit < lastIndex {
+			rf.commitedIndex = args.LeaderCommit
+		} else {
+			rf.commitedIndex = lastIndex
+		}
+		go rf.applyLogs()
+	}
+
 	//fmt.Printf("%d 号 server 收到了来自 %d 号server 的 heartbeat\n", rf.me, args.LeaderId)
 }
 
@@ -336,6 +383,35 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		//fmt.Printf("sendAppendEntries %d server 从leader变回了follower\n", rf.me)
 		return ok
 	}
+
+	if reply.Success {
+		newMatchIndex := args.PrevLogIndex + len(args.Entries)
+		//fmt.Println(newMatchIndex)
+		if newMatchIndex > rf.matchIndex[server] {
+			rf.matchIndex[server] = newMatchIndex
+		}
+		rf.nextIndex[server] = rf.matchIndex[server] + 1
+		//fmt.Printf("%d 号 server 的 match = %d， next = %d\n", server, rf.matchIndex[server], rf.nextIndex[server])
+	} else {
+		rf.nextIndex[server] = reply.NextIndex
+	}
+	//fmt.Printf("%d 号 server 的 match = %d， next = %d\n", server, rf.matchIndex[server], rf.nextIndex[server])
+	for i := len(rf.logs) - 1; i > rf.commitedIndex; i-- {
+		cnt := 1
+		if rf.logs[i].Term == rf.currentTerm {
+			for j, _ := range rf.peers {
+				if j != rf.me && rf.matchIndex[j] >= i {
+					cnt++
+				}
+			}
+		}
+		if cnt > len(rf.peers)/2 {
+			rf.commitedIndex = i
+			go rf.applyLogs()
+			break
+		}
+	}
+
 	return ok
 }
 
@@ -428,7 +504,6 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) broadcastAppendEntries() {
-	// 不能加锁，调用的方法加了锁
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.role != Leader {
@@ -443,6 +518,7 @@ func (rf *Raft) broadcastAppendEntries() {
 				LeaderCommit: rf.commitedIndex,
 			}
 			args.PrevLogIndex = rf.nextIndex[i] - 1
+			//fmt.Println(args.PrevLogIndex)
 			args.PrevLogTerm = rf.logs[args.PrevLogIndex].Term
 			entries := rf.logs[rf.nextIndex[i]:]
 			args.Entries = make([]LogEntry, len(entries))
@@ -519,8 +595,8 @@ func (rf *Raft) broadcastRequestVote() {
 	}
 	//fmt.Printf("%d 号 server 广播拉票\n", rf.me)
 	args := RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
 		LastLogIndex: len(rf.logs) - 1,
 		LastLogTerm:  rf.logs[len(rf.logs)-1].Term,
 	}
