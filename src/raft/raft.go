@@ -238,6 +238,7 @@ type AppendEntriesReply struct {
 	Term      int
 	Success   bool
 	NextIndex int
+	NextTerm  int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -254,39 +255,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term > rf.currentTerm {
 		rf.stepDownToFollower(args.Term)
-		//fmt.Printf("AppendEntries %d server 从leader变回了follower\n", rf.me)
 	}
 
 	rf.sendToChannel(rf.heartbeatCh, true)
 	reply.Term = rf.currentTerm
 	reply.Success = false
+	reply.NextTerm = -1
 
 	lastIndex := len(rf.logs) - 1
 	//fmt.Println("last : ",lastIndex)
 	if args.PrevLogIndex > lastIndex {
 		reply.NextIndex = lastIndex + 1
-		//fmt.Printf("pre > last : pre = %d\n", args.PrevLogIndex)
 		return
 	}
 
 	if pTerm := rf.logs[args.PrevLogIndex].Term; pTerm != args.PrevLogTerm {
-		// 不相等，回退一条
-		//fmt.Println("回退一条")
-		reply.NextIndex = args.PrevLogIndex - 1
+		// term不相等，回退
+		reply.NextTerm = pTerm
+		// 找到conflict term的第一条
+		for i := args.PrevLogIndex; i >= 0 && rf.logs[i].Term == pTerm; i-- {
+			reply.NextIndex = i
+		}
 		return
 	}
 
-	//for i, j := args.PrevLogIndex+1, 0; i < lastIndex+1 && j < len(args.Entries); i, j = i+1, j+1 {
-	//	// 找到第一条不匹配的
-	//	if rf.logs[i].Term != args.Entries[j].Term {
-	//
-	//	}
-	//}
-
-	rf.logs = rf.logs[:args.PrevLogIndex + 1]
-	if args.Entries != nil{
+	rf.logs = rf.logs[:args.PrevLogIndex+1]
+	if args.Entries != nil {
 		rf.logs = append(rf.logs, args.Entries...)
-		//fmt.Println("--------------")
 	}
 	reply.NextIndex = len(rf.logs)
 
@@ -300,8 +295,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		go rf.applyLogs()
 	}
-
-	//fmt.Printf("%d 号 server 收到了来自 %d 号server 的 heartbeat\n", rf.me, args.LeaderId)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -380,22 +373,24 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	if reply.Term > rf.currentTerm {
 		rf.stepDownToFollower(args.Term)
-		//fmt.Printf("sendAppendEntries %d server 从leader变回了follower\n", rf.me)
 		return ok
 	}
 
 	if reply.Success {
 		newMatchIndex := args.PrevLogIndex + len(args.Entries)
-		//fmt.Println(newMatchIndex)
 		if newMatchIndex > rf.matchIndex[server] {
 			rf.matchIndex[server] = newMatchIndex
 		}
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
-		//fmt.Printf("%d 号 server 的 match = %d， next = %d\n", server, rf.matchIndex[server], rf.nextIndex[server])
-	} else {
+	} else if reply.NextTerm == -1 {
 		rf.nextIndex[server] = reply.NextIndex
+	} else {
+		// 找到第一个>=reply.nextTerm
+		for i := args.PrevLogIndex; i >= 0 && rf.logs[i].Term >= reply.NextTerm; i-- {
+			rf.nextIndex[server] = i
+		}
 	}
-	//fmt.Printf("%d 号 server 的 match = %d， next = %d\n", server, rf.matchIndex[server], rf.nextIndex[server])
+
 	for i := len(rf.logs) - 1; i > rf.commitedIndex; i-- {
 		cnt := 1
 		if rf.logs[i].Term == rf.currentTerm {
