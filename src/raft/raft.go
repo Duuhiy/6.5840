@@ -18,13 +18,14 @@ package raft
 //
 
 import (
+	"6.5840/labgob"
+	"bytes"
 	"math/rand"
 	"time"
 
+	"6.5840/labrpc"
 	"sync"
 	"sync/atomic"
-	//	"6.5840/labgob"
-	"6.5840/labrpc"
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -69,21 +70,21 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
-
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	// Persistent state on all servers
 	currentTerm int
-	role        Role
 	voteFor     int
 	logs        []LogEntry
-
+	// Volatile state on all servers
 	commitedIndex int
 	lastApplied   int
-
+	// Volatile state on leaders (Reinitialized after election)
 	nextIndex  []int
 	matchIndex []int
 
+	role    Role
 	applyCh chan ApplyMsg
 	//lastTime    time.Time
 	votedCount  int
@@ -98,7 +99,6 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
 	var isleader bool
 	// Your code here (2A).
@@ -125,6 +125,13 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil || e.Encode(rf.voteFor) != nil || e.Encode(rf.logs) != nil {
+		panic("failed to encode raft persistent state")
+	}
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -144,7 +151,19 @@ func (rf *Raft) readPersist(data []byte) {
 	// } else {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
-	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var voteFor int
+	var logs []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+		panic("failed to decode raft persistent state")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.voteFor = voteFor
+		rf.logs = logs
+	}
 }
 
 // the service says it has created a snapshot that has
@@ -279,11 +298,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	rf.logs = rf.logs[:args.PrevLogIndex+1]
 	if args.Entries != nil {
-		rf.logs = append(rf.logs, args.Entries...)
+		i, j := args.PrevLogIndex+1, 0
+		for ; i < len(rf.logs) && j < len(args.Entries); i, j = i+1, j+1 {
+			if rf.logs[i].Term != args.Entries[j].Term {
+				break
+			}
+		}
+		rf.logs = rf.logs[:i]
+		rf.logs = append(rf.logs, args.Entries[j:]...)
 	}
-	reply.NextIndex = len(rf.logs)
+	//reply.NextIndex = len(rf.logs)
 
 	reply.Success = true
 
@@ -382,13 +407,24 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.matchIndex[server] = newMatchIndex
 		}
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
-	} else if reply.NextTerm == -1 {
+	} else if reply.NextTerm < 0 {
 		rf.nextIndex[server] = reply.NextIndex
+		//rf.matchIndex[server] = reply.NextIndex - 1
 	} else {
-		// 找到第一个>=reply.nextTerm
-		for i := args.PrevLogIndex; i >= 0 && rf.logs[i].Term >= reply.NextTerm; i-- {
-			rf.nextIndex[server] = i
+		// 找到最后一个>=reply.nextTerm
+		prevLogIndex := args.PrevLogIndex
+		for ; prevLogIndex >= 0; prevLogIndex-- {
+			if rf.logs[prevLogIndex].Term == reply.NextTerm{
+				break
+			}
 		}
+		if prevLogIndex < 0 {
+			rf.nextIndex[server] = reply.NextIndex
+		}else {
+			rf.nextIndex[server] = prevLogIndex
+		}
+
+		//rf.matchIndex[server] = rf.nextIndex[server] - 1
 	}
 
 	for i := len(rf.logs) - 1; i > rf.commitedIndex; i-- {
@@ -571,7 +607,7 @@ func (rf *Raft) convertToLeader() {
 	}
 	//rf.persist()
 
-	go rf.broadcastAppendEntries()
+	//go rf.broadcastAppendEntries()
 }
 
 func (rf *Raft) resetChannels() {
@@ -609,7 +645,7 @@ func (rf *Raft) stepDownToFollower(term int) {
 	rf.role = Follower
 	rf.voteFor = -1
 	rf.currentTerm = term
-	//rf.persist()
+	rf.persist()
 	if state != Follower {
 		// 通知变成follower
 		rf.sendToChannel(rf.stepDownCh, true)
