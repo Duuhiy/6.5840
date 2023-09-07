@@ -194,6 +194,16 @@ func (cfg *config) ingestSnap(i int, snapshot []byte, index int) string {
 		log.Fatalf("snapshot decode error")
 		return "snapshot Decode() error"
 	}
+	//if d.Decode(&lastIncludedIndex) != nil{
+	//	log.Fatalf("d.Decode(&lastIncludedIndex) != nil")
+	//	return "snapshot Decode() error"
+	//}
+	//
+	//if d.Decode(&xlog) != nil{
+	//	log.Fatalf("d.Decode(&xlog) != nil")
+	//	return "snapshot Decode() error"
+	//}
+
 	if index != -1 && index != lastIncludedIndex {
 		err := fmt.Sprintf("server %v snapshot doesn't match m.SnapshotIndex", i)
 		return err
