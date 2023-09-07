@@ -24,7 +24,7 @@ lab2b
 感觉lab2b和lab2c需要写的反而不多，主体都在lab2a完成了，只需要把相应的逻辑加上去。
 
 lab2c
-Figure 8 (unreliable) ...，fail to reach agreement。这个可以参考https://github.com/springfieldking/mit-6.824-golabs-2018/issues/1，给出了很多种可能和解决方案。
+Figure 8 (unreliable) ...，fail to reach agreement。这个可以参考https://github.com/springfieldking/mit-6.824-golabs-2018/issues/1 ，给出了很多种可能和解决方案。
 
 lab2d
 
